@@ -3,7 +3,7 @@ import numpy as np
 import slam_utils
 import tree_extraction
 from scipy.stats.distributions import chi2
-
+import copy
 
 def motion_model(u, dt, ekf_state, vehicle_params):
     '''
@@ -119,6 +119,7 @@ def gps_update(gps, ekf_state, sigmas):
     R_mat[1, 1] = sigmas['gps'] ** 2
     S_mat = H_mat * P_mat * H_mat.T + R_mat
     d = (np.matrix(r)).T * np.matrix(slam_utils.invert_2x2_matrix(np.array(S_mat))) * np.matrix(r)
+
     if d <= chi2.ppf(0.999, 2):
         K_mat = P_mat * H_mat.T * np.matrix(slam_utils.invert_2x2_matrix(np.array(S_mat)))
         ekf_state['x'] = ekf_state['x'] + np.squeeze(np.array(K_mat * np.matrix(r)))
@@ -146,19 +147,34 @@ def laser_measurement_model(ekf_state, landmark_id):
     # Implement the measurement model and its Jacobian you derived
     ###
 
-    delta_x = ekf_state['x'][2 * landmark_id + 3] - ekf_state['x'][0]
-    delta_y = ekf_state['x'][2 * landmark_id + 4] - ekf_state['x'][1]
+    current_state = ekf_state['x'].copy()
+    state_ori = slam_utils.clamp_angle(current_state[2])
+
+    delta_x = current_state[2 * landmark_id + 3] - current_state[0]
+    delta_y = current_state[2 * landmark_id + 4] - current_state[1]
     delta = [delta_x, delta_y]
+
     q = np.matmul(np.transpose(delta), delta)
+
     zhat = np.zeros((2, 1))
     sqrt_q = np.sqrt(q)
+
     zhat[0] = sqrt_q
-    zhat[1] = slam_utils.clamp_angle(np.arctan2(delta_y, delta_x) - ekf_state['x'][2])
+    zhat[1] = slam_utils.clamp_angle(np.arctan2(delta_y, delta_x) - state_ori)
 
-    H_low = np.array([[-sqrt_q*delta_x, -sqrt_q*delta_y, 0, sqrt_q*delta_x, sqrt_q*delta_y],
-                     [delta_y, -delta_x, -q, -delta_y, delta_x]])
+    # H_low = (np.array([[sqrt_q*delta_x, -sqrt_q*delta_y, 0, -sqrt_q*delta_x, sqrt_q*delta_y],
+    #                     [delta_y, delta_x, -1, -delta_y, -delta_x]]))/q
 
-    return zhat, H_low
+    H_low = np.array([[-sqrt_q * delta_x, -sqrt_q * delta_y, 0, sqrt_q * delta_x, sqrt_q * delta_y],
+                      [delta_y, -delta_x, -q, -delta_y, delta_x]])/q
+
+    Fxj = np.zeros((5, 3+2*ekf_state['num_landmarks']))
+    Fxj[:3, :3] = np.eye(3)
+    Fxj[3, 3 + 2*landmark_id] = 1
+    Fxj[4, 4 + 2*landmark_id] = 1
+    H = np.matmul(H_low, Fxj)
+
+    return zhat, H
 
 
 def initialize_landmark(ekf_state, tree):
@@ -225,7 +241,7 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
 
     M = np.zeros((n_measurements, n_landmarks))
 
-    alpha = chi2.ppf(0.995, 2)
+    alpha = chi2.ppf(0.95, 2)
     beta = chi2.ppf(0.99, 2)
     Aug = alpha*np.eye(n_measurements)
 
@@ -290,11 +306,58 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
     # Implement the EKF update for a set of range, bearing measurements.
     ###
 
+    # Qt = [[sigmas['range']**2, 0], [0, sigmas['bearing']**2]]
+    #
+    # for i in range(len(trees)):
+    #
+    #     j = assoc[i]
+    #     if j == -1:
+    #         ekf_state = initialize_landmark(ekf_state, trees[i])
+    #         j = np.int(len(ekf_state['x'])/2) - 2
+    #
+    #     if j == -2:
+    #         continue
+    #
+    #     if j < -2 or j > ekf_state['num_landmarks']:
+    #         raise ValueError('Problem in Data Association')
+    #
+    #     zhat, Hlow = laser_measurement_model(ekf_state, j)
+    #
+    #     P = np.zeros((5, 5))
+    #     P[:3, :3] = ekf_state['P'][:3, :3]
+    #     P[:3, 3:5] = ekf_state['P'][:3,  2*j+1: 2*j+3]
+    #     P[3:5, :3] = ekf_state['P'][2*j+1: 2*j+3, :3]
+    #     P[3:5, 3:5] = ekf_state['P'][2*j+1: 2*j+3, 2*j+1: 2*j+3]
+    #
+    #     # Kalman Gain Initialization
+    #     temp1 = np.matmul(ekf_state['P'], np.transpose(Hlow))
+    #     temp2 = slam_utils.invert_2x2_matrix(np.matmul(Hlow, temp1))
+    #     Kt = np.matmul(temp1, temp2)
+    #
+    #     # Lidar Landmark j measurement
+    #     z = np.zeros((2, 1))
+    #     z[0] = trees[i][0]
+    #     z[1] = trees[i][1]
+    #
+    #     # Mean Update
+    #     change_ut = np.matmul(Kt, z-zhat)
+    #     ekf_state['x'][:3] = ekf_state['x'][:3] + np.squeeze(change_ut[:3])
+    #     ekf_state['x'][2] = slam_utils.clamp_angle(ekf_state['x'][2])
+    #     ekf_state['x'][1 + 2*j: 3 + 2*j] = ekf_state['x'][1 + 2*j: 3 + 2*j] + np.squeeze(change_ut[3:5])
+    #
+    #     # Covariance Update
+    #     change_Pt = np.matmul((np.eye(5) - np.matmul(Kt, Hlow)), P)
+    #     ekf_state['P'][:3, :3] = change_Pt[:3, :3]
+    #     ekf_state['P'][:3, 2*j+1: 2*j+3] = change_Pt[:3, 3:5]
+    #     ekf_state['P'][2*j+1: 2*j+3, :3] = change_Pt[3:5, :3]
+    #     ekf_state['P'][2*j+1: 2*j+3, 2*j+1: 2*j+3] = change_Pt[3:5, 3:5]
+
     Qt = [[sigmas['range']**2, 0], [0, sigmas['bearing']**2]]
 
     for i in range(len(trees)):
 
         j = assoc[i]
+
         if j == -1:
             ekf_state = initialize_landmark(ekf_state, trees[i])
             j = np.int(len(ekf_state['x'])/2) - 2
@@ -305,17 +368,11 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
         if j < -2 or j > ekf_state['num_landmarks']:
             raise ValueError('Problem in Data Association')
 
-        zhat, Hlow = laser_measurement_model(ekf_state, j)
-
-        P = np.zeros((5, 5))
-        P[:3, :3] = ekf_state['P'][:3, :3]
-        P[:3, 3:5] = ekf_state['P'][:3,  2*j+3: 2*j+5]
-        P[3:5, :3] = ekf_state['P'][2*j+3: 2*j+5, :3]
-        P[3:5, 3:5] = ekf_state['P'][2*j+3: 2*j+5, 2*j+3: 2*j+5]
+        zhat, H = laser_measurement_model(ekf_state, j)
 
         # Kalman Gain Initialization
-        temp1 = np.matmul(P, np.transpose(Hlow))
-        temp2 = slam_utils.invert_2x2_matrix(np.matmul(Hlow, temp1))
+        temp1 = np.matmul(ekf_state['P'], np.transpose(H))
+        temp2 = np.linalg.inv(np.matmul(H, temp1))
         Kt = np.matmul(temp1, temp2)
 
         # Lidar Landmark j measurement
@@ -330,7 +387,7 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
         ekf_state['x'][3 + 2*j: 5 + 2*j] = ekf_state['x'][3 + 2*j: 5 + 2*j] + np.squeeze(change_ut[3:5])
 
         # Covariance Update
-        change_Pt = np.matmul((np.eye(5) - np.matmul(Kt, Hlow)), P)
+        change_Pt = np.matmul((np.eye(5) - np.matmul(Kt, H)), ekf_state['P'])
         ekf_state['P'][:3, :3] = change_Pt[:3, :3]
         ekf_state['P'][:3, 2*j+3: 2*j+5] = change_Pt[:3, 3:5]
         ekf_state['P'][2*j+3: 2*j+5, :3] = change_Pt[3:5, :3]
