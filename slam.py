@@ -19,25 +19,45 @@ def motion_model(u, dt, ekf_state, vehicle_params):
     # Implement the vehicle model and its Jacobian you derived.
     ###
 
-    phi = ekf_state['x'][2]
-    ve = u[0]
-    alpha = u[1]
+
+    # phi = ekf_state['x'][2]
+    # ve = u[0]
+    # alpha = u[1]
+    # H = vehicle_params['H']
+    # L = vehicle_params['L']
+    # a = vehicle_params['a']
+    # b = vehicle_params['b']
+    #
+    # vc = ve/(1 - (np.tan(alpha) * H /L))
+    #
+    # G = np.array([[1, 0, -dt * (vc * np.sin(phi) + (vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi))) / L)],
+    #               [0, 1, dt * (vc * np.cos(phi) - (vc * np.tan(alpha) * (b * np.cos(phi) + a * np.sin(phi))) / L)],
+    #               [0, 0, 1]])
+    #
+    # motion = np.array([[dt * (vc * np.cos(phi) - vc * np.tan(alpha) * (a * np.sin(phi) + b * np.cos(phi)) / L),
+    #                     dt * (vc * np.sin(phi) - vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi)) / L),
+    #                     dt * vc * np.tan(alpha) / L]])
+    #
+    # motion[0, 2] = slam_utils.clamp_angle(motion[0, 2])
+
+
+    v_e = u[0]
+    alpha = u[1].copy()
+    v_c = (v_e)/(1-np.tan(alpha)*(vehicle_params['H']/vehicle_params['L']))
+    t_st = ekf_state['x'].copy()
+    phi = t_st[2]
     H = vehicle_params['H']
     L = vehicle_params['L']
     a = vehicle_params['a']
     b = vehicle_params['b']
-
-    vc = ve/(1 - (np.tan(alpha) * H /L))
-
-    G = np.array([[1, 0, -dt * (vc * np.sin(phi) + (vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi))) / L)],
-                  [0, 1, dt * (vc * np.cos(phi) - (vc * np.tan(alpha) * (b * np.cos(phi) + a * np.sin(phi))) / L)],
-                  [0, 0, 1]])
-
-    motion = np.array([[dt * (vc * np.cos(phi) - vc * np.tan(alpha) * (a * np.sin(phi) + b * np.cos(phi)) / L),
-                        dt * (vc * np.sin(phi) - vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi)) / L),
-                        dt * vc * np.tan(alpha) / L]])
-
-    motion[0, 2] = slam_utils.clamp_angle(motion[0, 2])
+    el1 = dt*(v_c*np.cos(phi)-(v_c/L)*np.tan(alpha)*(a*np.sin(phi)+b*np.cos(phi)))
+    el2 = dt*(v_c*np.sin(phi)+(v_c/L)*np.tan(alpha)*(a*np.cos(phi)-b*np.sin(phi)))
+    el3 = dt*(v_c/L)*np.tan(alpha)
+    el31 = slam_utils.clamp_angle(el3)
+    motion = np.array([[el1],[el2],[el31]])
+    el13 = -dt*v_c*(np.sin(phi)+(1/L)*np.tan(alpha)*(a*np.cos(phi)-b*np.sin(phi)))
+    el23 = dt*v_c*(np.cos(phi)-(1/L)*np.tan(alpha)*(a*np.sin(phi)+b*np.cos(phi)))
+    G = np.array([[1,0,el13],[0,1,el23],[0,0,1]])
 
     return motion, G
 
@@ -54,25 +74,26 @@ def odom_predict(u, dt, ekf_state, vehicle_params, sigmas):
     # Implement the propagation
     ###
 
-    motion, G = motion_model(u, dt, ekf_state, vehicle_params)
-    x_ = ekf_state['x'][0:3]
-    x = x_ + motion
-    ekf_state['x'][:3] = x
-    ekf_state['x'][2] = slam_utils.clamp_angle(ekf_state['x'][2])
-    dim = ekf_state['x'].shape[0] - 3
+    t_st = ekf_state['x'].copy()
+    t_st = np.reshape(t_st,(t_st.shape[0],1))
+    t_cov = ekf_state['P'].copy()
+    dim = t_st.shape[0]-3
+    F_x = np.hstack((np.eye(3),np.zeros((3,dim))))
+    mot, g = motion_model(u,dt,ekf_state,vehicle_params)
+    new_x = t_st + np.matmul(np.transpose(F_x),mot)
 
-    # Noise
-    R_t = np.zeros((3, 3))
-    R_t[0, 0], R_t[1, 1], R_t[2, 2] = sigmas['xy']*sigmas['xy'], sigmas['xy']*sigmas['xy'], sigmas['phi']*sigmas['phi']
-
-    Gt = np.eye(dim+3)
-    Gt[:3, :3] = G
-
-    Rx = np.eye(dim+3)
-    Rx[:3, :3] = R_t
-    ekf_state['P'] = np.matmul(np.matmul(Gt, ekf_state['P']), np.transpose(Gt)) + Rx
-    ekf_state['P'] = slam_utils.make_symmetric(ekf_state['P'])
-
+    R_t = np.zeros((3,3))
+    R_t[0,0] = sigmas['xy']*sigmas['xy']
+    R_t[1,1] = sigmas['xy']*sigmas['xy']
+    R_t[2,2] = sigmas['phi']*sigmas['phi']
+    Gt_1 = np.hstack((g, np.zeros((3,dim))))
+    Gt_2 = np.hstack((np.zeros((dim,3)),np.eye(dim)))
+    Gt = np.vstack((Gt_1,Gt_2))
+    new_cov = np.matmul(Gt,np.matmul(t_cov,np.transpose(Gt)))+np.matmul(np.transpose(F_x),np.matmul(R_t,F_x))
+    new_cov = slam_utils.make_symmetric(new_cov)
+    new_x = np.reshape(new_x,(new_x.shape[0],))
+    ekf_state['x'] = new_x
+    ekf_state['P'] = new_cov
     return ekf_state
 
 
@@ -200,9 +221,14 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
     ###
 
     n_landmarks = ekf_state['num_landmarks']
-    n_measurements = len(measurements[0])
+    n_measurements = len(measurements)
 
-    M = np.zeros((n_landmarks, n_measurements))
+    M = np.zeros((n_measurements, n_landmarks))
+
+    alpha = chi2.ppf(0.995, 2)
+    beta = chi2.ppf(0.99, 2)
+    Aug = alpha*np.eye(n_measurements)
+
     for k in range(n_landmarks):
 
         P = np.zeros((5, 5))
@@ -212,13 +238,34 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
         P[3:5, 3:5] = ekf_state['P'][2*k+3: 2*k+5, 2*k+3: 2*k+5]
 
         zhat, Hlow = laser_measurement_model(ekf_state, k)
-        S = np.matmul(Hlow, np.matmul(P, np.transpose(Hlow))) + np.diag([sigmas['range']**2, sigmas['range']**2])
+        S = np.matmul(Hlow, np.matmul(P, np.transpose(Hlow))) + np.diag([sigmas['range']**2, sigmas['bearing']**2])
         Sinv = slam_utils.invert_2x2_matrix(S)
+
         for j in range(n_measurements):
             innovation = measurements[j][:2] - ekf_state['x'][2*k+3: 2*k+4]
-            M[k, j] = np.matmul(np.transpose(innovation), np.matmul(Sinv, innovation))
+            M[j, k] = np.matmul(np.transpose(innovation), np.matmul(Sinv, innovation))
 
-    assoc = slam_utils.solve_cost_matrix_heuristic(np.transpose(M))
+    MAug = np.hstack((M, Aug))
+
+    pairs = slam_utils.solve_cost_matrix_heuristic(MAug)
+    pairs.sort()
+
+    def newLandmark(x):
+        if x[1] >= n_measurements:
+            return x[0], -1
+        else:
+            return x
+
+    temp = [newLandmark(x) for x in pairs]
+
+    assoc = [x[1] for x in temp]
+
+    for i in range(len(assoc)):
+        if assoc[i] == -1:
+            for j in range(M.shape[1]):
+                if M[i, j] < beta:
+                    assoc[i] = -2
+                    break
 
     return assoc
 
@@ -252,6 +299,12 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
             ekf_state = initialize_landmark(ekf_state, trees[i])
             j = np.int(len(ekf_state['x'])/2) - 2
 
+        if j == -2:
+            continue
+
+        if j < -2 or j > ekf_state['num_landmarks']:
+            raise ValueError('Problem in Data Association')
+
         zhat, Hlow = laser_measurement_model(ekf_state, j)
 
         P = np.zeros((5, 5))
@@ -267,8 +320,8 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
 
         # Lidar Landmark j measurement
         z = np.zeros((2, 1))
-        z[0] = trees[j][0]
-        z[1] = trees[j][1]
+        z[0] = trees[i][0]
+        z[1] = trees[i][1]
 
         # Mean Update
         change_ut = np.matmul(Kt, z-zhat)
@@ -377,7 +430,7 @@ def main():
         # Measurement noise
         "gps": 3,
         "range": 0.4,
-        "bearing": 3*np.pi/180
+        "bearing": 5*np.pi/180
     }
 
     # Initial filter state
