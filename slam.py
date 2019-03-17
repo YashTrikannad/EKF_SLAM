@@ -19,28 +19,6 @@ def motion_model(u, dt, ekf_state, vehicle_params):
     # Implement the vehicle model and its Jacobian you derived.
     ###
 
-
-    # phi = ekf_state['x'][2]
-    # ve = u[0]
-    # alpha = u[1]
-    # H = vehicle_params['H']
-    # L = vehicle_params['L']
-    # a = vehicle_params['a']
-    # b = vehicle_params['b']
-    #
-    # vc = ve/(1 - (np.tan(alpha) * H /L))
-    #
-    # G = np.array([[1, 0, -dt * (vc * np.sin(phi) + (vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi))) / L)],
-    #               [0, 1, dt * (vc * np.cos(phi) - (vc * np.tan(alpha) * (b * np.cos(phi) + a * np.sin(phi))) / L)],
-    #               [0, 0, 1]])
-    #
-    # motion = np.array([[dt * (vc * np.cos(phi) - vc * np.tan(alpha) * (a * np.sin(phi) + b * np.cos(phi)) / L),
-    #                     dt * (vc * np.sin(phi) - vc * np.tan(alpha) * (a * np.cos(phi) - b * np.sin(phi)) / L),
-    #                     dt * vc * np.tan(alpha) / L]])
-    #
-    # motion[0, 2] = slam_utils.clamp_angle(motion[0, 2])
-
-
     v_e = u[0]
     alpha = u[1].copy()
     v_c = (v_e)/(1-np.tan(alpha)*(vehicle_params['H']/vehicle_params['L']))
@@ -237,16 +215,16 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
 
     alpha = chi2.ppf(0.95, 2)
     beta = chi2.ppf(0.99, 2)
-    Aug = alpha*np.eye(n_measurements)
+    Aug = alpha*np.ones((n_measurements, n_measurements))
 
     for k in range(n_landmarks):
         zhat, H = laser_measurement_model(ekf_state, k)
-        S = np.matmul(H, np.matmul(ekf_state['P'].copy(),
+        S = np.matmul(H, np.matmul(ekf_state['P'],
                                    np.transpose(H))) + np.diag([sigmas['range']**2, sigmas['bearing']**2])
         Sinv = slam_utils.invert_2x2_matrix(S)
 
         for j in range(n_measurements):
-            innovation = measurements[j][:2] - ekf_state['x'][2*k+3: 2*k+4]
+            innovation = measurements[j][:2] - np.squeeze(zhat)
             M[j, k] = np.matmul(np.transpose(innovation), np.matmul(Sinv, innovation))
 
     MAug = np.hstack((M, Aug))
@@ -255,7 +233,7 @@ def compute_data_association(ekf_state, measurements, sigmas, params):
     pairs.sort()
 
     def newLandmark(x):
-        if x[1] >= n_measurements:
+        if x[1] >= n_landmarks:
             return x[0], -1
         else:
             return x
@@ -307,7 +285,7 @@ def laser_update(trees, assoc, ekf_state, sigmas, params):
         if j == -2:
             continue
 
-        if j < -2 or j > ekf_state['num_landmarks']:
+        if j < -2 or j >= ekf_state['num_landmarks']:
             raise ValueError('Problem in Data Association')
 
         zhat, H = laser_measurement_model(ekf_state, j)
