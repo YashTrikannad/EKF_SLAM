@@ -118,8 +118,6 @@ def laser_measurement_model(ekf_state, landmark_id):
     # Implement the measurement model and its Jacobian you derived
     ###
 
-    # state_ori = slam_utils.clamp_angle(ekf_state['x'][2])
-
     delta_x = ekf_state['x'][2 * landmark_id + 3] - ekf_state['x'][0]
     delta_y = ekf_state['x'][2 * landmark_id + 4] - ekf_state['x'][1]
 
