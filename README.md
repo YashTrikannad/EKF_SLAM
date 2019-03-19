@@ -1,4 +1,4 @@
-# EKF_SLAM
+# 2D SLAM using Extended Kalman Filters
 Implementation of EKF SLAM on Victoria Park Dataset
 
 High Covariances during initial motion:
