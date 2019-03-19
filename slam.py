@@ -52,20 +52,20 @@ def odom_predict(u, dt, ekf_state, vehicle_params, sigmas):
     # Implement the propagation
     ###
 
-    t_st = np.reshape(ekf_state['x'], (ekf_state['x'].shape[0], 1))
-    dim = t_st.shape[0]-3
+    state = np.reshape(ekf_state['x'], (ekf_state['x'].shape[0], 1))
+
+    dim = state.shape[0]-3
     F_x = np.hstack((np.eye(3), np.zeros((3, dim))))
+
     mot, g = motion_model(u, dt, ekf_state, vehicle_params)
-    new_x = t_st + np.matmul(np.transpose(F_x), mot)
+    new_x = state + np.matmul(np.transpose(F_x), mot)
 
-    R_t = np.diag([sigmas['xy']**2, sigmas['xy']**2, sigmas['phi']**2])
+    Rt = np.diag([sigmas['xy']**2, sigmas['xy']**2, sigmas['phi']**2])
+    
+    Gt = np.vstack((np.hstack((g, np.zeros((3, dim)))),np.hstack((np.zeros((dim, 3)), np.eye(dim)))))
 
-    Gt_1 = np.hstack((g, np.zeros((3, dim))))
-    Gt_2 = np.hstack((np.zeros((dim, 3)), np.eye(dim)))
-    Gt = np.vstack((Gt_1, Gt_2))
-    new_cov = np.matmul(Gt, np.matmul(ekf_state['P'], np.transpose(Gt)))+np.matmul(np.transpose(F_x),
-                                                                                   np.matmul(R_t, F_x))
-    ekf_state['P'] = slam_utils.make_symmetric(new_cov)
+    ekf_state['P'] = slam_utils.make_symmetric(np.matmul(Gt, np.matmul(ekf_state['P'], np.transpose(Gt)))
+                                               +np.matmul(np.transpose(F_x), np.matmul(Rt, F_x)) )
     ekf_state['x'] = np.reshape(new_x, (new_x.shape[0],))
 
     return ekf_state
